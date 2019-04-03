@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import scipy.stats as stats
 import pickle
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import RobustScaler
 from sklearn.linear_model import LinearRegression
 from sklearn.decomposition import PCA
 
@@ -67,7 +67,7 @@ class Strategy():
 
         if self.count_day >= 10:
             # standardize features
-            scaler = StandardScaler()
+            scaler = RobustScaler()
             # copy
             f_series_std = self.prev_factors
             for f in range(F):
