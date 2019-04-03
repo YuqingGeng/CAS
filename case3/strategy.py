@@ -110,7 +110,7 @@ class Strategy():
                 signal = np.dot(pca_factors, X_af[a])
                 alloc[a] = signal
         else:
-            alloc = np.random.rand(680,)
+            alloc = np.random.rand(A,)
         # print("Alloc", alloc)ß
         # load today's data as prev
         self.load_prev_data(price, factors)
