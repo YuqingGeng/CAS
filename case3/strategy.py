@@ -4,7 +4,9 @@ import pandas as pd
 import scipy.stats as stats
 import pickle
 from sklearn.preprocessing import RobustScaler
+from sklearn.preprocessing import Normalizer
 from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import Ridge
 from sklearn.decomposition import PCA
 
 def load_object(file_name):
@@ -29,6 +31,7 @@ class Strategy():
         self.yesterday_price = 0
         self.prev_factors =  None # N*A*F
         self.prev_log_return = None #N*A
+        self.prev_price = None
         self.count_day = 0
 
     def load_prev_return(self, price):
@@ -37,6 +40,7 @@ class Strategy():
 
         if self.count_day == 1:
             self.prev_log_return = np.array([prev_return])
+            self.prev_price = np.array([price])
         else:
             self.prev_log_return = np.append(self.prev_log_return, [prev_return], axis=0)
 
@@ -47,6 +51,13 @@ class Strategy():
             self.prev_factors = np.append(self.prev_factors, [factors], axis=0)
 
         self.yesterday_price = price
+
+    def risk_weight(self, A):
+        # calculate the standard deviations
+        M_rw = np.empty((A,),dtype=float)
+        var_log_return = self.prev_log_return.var()
+        var_log_return = np.array(var_log_return)
+        return np.linalg.norm(var_log_return)
 
     def handle_update(self, inx, price, factors):
         """Put your logic here
@@ -77,8 +88,9 @@ class Strategy():
 
             # PCA matrix
             # loop through every asset
+            '''
             pca_tranform = []
-            pca_num = 5
+            pca_num = 6
             for a in range(A):
                 x = f_series_std[:, a, :] #N*F
                 y = self.prev_log_return[:, a] #N*1
@@ -86,16 +98,18 @@ class Strategy():
                 pca = PCA(n_components = pca_num, svd_solver = 'auto') # auto = default; choose between 6 and 7
                 principal_factor = pca.fit_transform(x)
                 pca_tranform.append(principal_factor)
+            '''
 
             # Linear Regression
             lm = LinearRegression()
             # X_af is the exposure of asset a to factor f
-            X_af = np.empty([A,pca_num])
+            # X_af = np.empty([A,pca_num])
+            X_af = np.empty([A,F])
 
             # loop through every asset
             for a in range(A):
                 x = f_series_std[:, a, :] #N*F
-                x = x @ pca_tranform[a]
+                # x = x @ pca_tranform[a]
                 y = self.prev_log_return[:, a] #N*1
                 lm.fit(x,y)
                 # print("####### asset ", a, "#######")
@@ -106,12 +120,18 @@ class Strategy():
             # do allocation
             alloc = np.empty((A,),dtype=float)
             for a in range(A):
-                pca_factors = factors[a] @ pca_tranform[a]
-                signal = np.dot(pca_factors, X_af[a])
+                # pca_factors = factors[a] @ pca_tranform[a]
+                # signal = np.dot(pca_factors, X_af[a])
+                signal = np.dot(factors[a], X_af[a])
                 alloc[a] = signal
+
+            M_rw = self.risk_weight(A)
+            np.multiply(alloc,M_rw)
+
+
         else:
             alloc = np.random.rand(A,)
-        # print("Alloc", alloc)ß
+
         # load today's data as prev
         self.load_prev_data(price, factors)
         # assert price.shape[0] == factors.shape[0]
