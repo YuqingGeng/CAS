@@ -1,131 +1,264 @@
+##### IMPORT PACKAGE #####
 import argparse
 import random
 import math
+import sys
+import numpy as np
+import pandas as pd
+import scipy as sp
 
 from client.exchange_service.client import BaseExchangeServerClient
 from protos.order_book_pb2 import Order
 from protos.service_pb2 import PlaceOrderResponse
 
-# dictionary to track mid-market-price for each asset
-asset_mid_prices = {}
-# dictionaries for tracking current bid-asks; use for spread calculation
-bids = {}
-asks = {}
+# import quantopian.experimental.optimize as opt
+# from quantopian.algorithm import calculate_optimal_portfolio
+from statsmodels.tsa.stattools import coint
 
-class ExampleMarketMaker(BaseExchangeServerClient):
-    """A simple market making bot - shows the basics of subscribing
-    to market updates and sending orders"""
-
+class Case1PairTrade(BaseExchangeServerClient):
     def __init__(self, *args, **kwargs):
+        # Init BaseExchangeServerClient
         BaseExchangeServerClient.__init__(self, *args, **kwargs)
 
         self._orderids = set([])
 
-    def _make_order(self, asset_code, quantity, base_price, spread, bid=True):
-        return Order(asset_code = asset_code, quantity=quantity if bid else -1*quantity,
+        # Our future contract codes and pairs
+        self.contract_list = ['K', 'M', 'N', 'Q', 'U', 'V']
+
+        # redesign pair
+        self.contract_pairs = [('K', 'M'), ('K', 'N'), ('K', 'Q'), ('K', 'U'), ('K', 'V'), \
+                                ('M', 'N'), ('M', 'Q'), ('M', 'U'), ('M', 'V'), \
+                                ('N', 'Q'), ('N', 'U'), ('N', 'V'), \
+                                ('Q', 'U'), ('Q', 'V'), \
+                                ('U', 'V')]
+
+        # History Data
+
+        self.hist_mid_price = {contract_code: None for contract_code in self.contract_list}
+
+        # Record weights
+        self.current_weights = {contract_code: 0 for contract_code in self.contract_list}
+
+        # Record contract status
+        self.in_Long = {contract_pair: False for contract_pair in self.contract_pairs}
+        self.in_Short = {contract_pair: False for contract_pair in self.contract_pairs}
+
+        # Time Windows
+        self.long_ma = 10
+        self.short_ma = 5
+
+        self.counter = 0
+
+
+    def _make_order(self, asset_code, quantity, base_price, spread, bid):
+        # print("ORDER")
+        # print(asset_code, quantity, base_price, spread, bid)
+        order = Order(asset_code = asset_code, quantity=quantity if bid else -1*quantity,
                      order_type = Order.ORDER_LMT,
-                     price = base_price-spread/2 if bid else base_price+spread/2,
+                     price = round(base_price-spread/2 if bid else base_price+spread/2, 2),
                      competitor_identifier = self._comp_id)
+        # print(order)
+        return order
 
     def handle_exchange_update(self, exchange_update_response):
-        print(exchange_update_response.competitor_metadata) # to monitor pnl
         '''
-        print(exchange_update_response.competitor_metadata)
-        # 10% of the time, cancel two arbitrary orders
-        if random.random() < 0.10 and len(self._orderids) > 0:
-            self.cancel_order(self._orderids.pop())
-            self.cancel_order(self._orderids.pop())
-
-        # only trade 5% of the time
-        if random.random() > 0.05:
-            return
+        Handle the update from the exchange
         '''
-        # store all updates to update aforementioned dictionary
+        # call the server update
         updates = exchange_update_response.market_updates
+
+        # print("#####", self.counter, "#####")
         for update in updates:
-            # update the mid price for each asset
+            contract = update.asset.asset_code
             mid_price = update.mid_market_price
-            recent_asset_code = update.asset.asset_code
-            asset_mid_prices[recent_asset_code] = mid_price
-            # print(asset_mid_prices)
+            highest_bid = update.bids[0].price
+            lowest_ask = update.asks[0].price
+            # print(highest_bid, lowest_ask)
+            spread = (lowest_ask - highest_bid) + 0.2
 
-        """Blunt calendar spread strategy: shorter expiries should have lower
-        yields, which means higher prices; if this pattern reverses we long
-        the nearer month and short the future month
+            # market making
+            bid_resp = self.place_order(self._make_order(contract_y, y_quantity, lowest_ask + 0.02, 0.0, True))
+            ask_resp = self.place_order(self._make_order(contract_x, x_quantity, highest_bid - 0.02, 0.0, False))
 
-        Currently just trading the K and M futures
-        """
-        # thresholds based on empirical analysis aka eyeballing
-        if asset_mid_prices["K"] - asset_mid_prices["M"] < -0.5:
-            quantity = random.randrange(1, 10)
-            spread = random.randrange(5, 10) # keeping this random spread
-            round(2.665, 2)
-            # long near
-            bid_resp = self.place_order(self._make_order("K", quantity,
-                round(asset_mid_prices["K"], 2), spread, True))
-            # short far
-            ask_resp = self.place_order(self._make_order("M", quantity,
-                round(asset_mid_prices["M"], 2), spread, False))
-
-            # check if order went through
             if type(bid_resp) != PlaceOrderResponse:
-                print(bid_resp)
+                print("BID FOR ", contract_y, " FAILED: ", bid_resp)
             else:
                 self._orderids.add(bid_resp.order_id)
             if type(ask_resp) != PlaceOrderResponse:
-                print(ask_resp)
-            else:
-                self._orderids.add(ask_resp.order_id)
-        if asset_mid_prices["K"] - asset_mid_prices["M"] > 0.5:
-            # short near long far:
-            quantity = random.randrange(1, 10)
-            """Next thing to work on: using the actual spread, dammit"""
-            spread = random.randrange(5, 10)
-            # long far
-            bid_resp = self.place_order(self._make_order("M", quantity,
-                round(asset_mid_prices["M"], 2), spread, True)) # round due to tick size requirement
-            # short near
-            ask_resp = self.place_order(self._make_order("K", quantity,
-                round(asset_mid_prices["K"], 2), spread, False))
-
-            # check if order went through
-            if type(bid_resp) != PlaceOrderResponse:
-                print(bid_resp)
-            else:
-                self._orderids.add(bid_resp.order_id)
-            if type(ask_resp) != PlaceOrderResponse:
-                print(ask_resp)
+                print("ASK FOR ", contract_x, " FAILED: ", ask_resp)
             else:
                 self._orderids.add(ask_resp.order_id)
 
-        """Keeping the horrible market making for now - not sure how this plays into case 1"""
-        '''
-        # place a bid and an ask for each asset
-        for i, asset_code in enumerate(["K", "M", "N", "Q", "U", "V"]):
-            # print("Asset code: ", asset_code)
-            quantity = random.randrange(1, 10)
-            base_price = random.randrange((i + 1) * 100, (i+1) * 150)
-            spread = random.randrange(5, 10)
-
-            bid_resp = self.place_order(self._make_order(asset_code, quantity,
-                base_price, spread, True))
-            ask_resp = self.place_order(self._make_order(asset_code, quantity,
-                base_price, spread, False))
-
-            if type(bid_resp) != PlaceOrderResponse:
-                print(bid_resp)
+            # print(contract, " ", mid_price)
+            # load data
+            if self.hist_mid_price[contract] == None:
+                mid_prices = []
+                mid_prices.append(mid_price)
+                self.hist_mid_price[contract] = mid_prices
             else:
-                self._orderids.add(bid_resp.order_id)
+                self.hist_mid_price[contract].append(mid_price)
 
-            if type(ask_resp) != PlaceOrderResponse:
-                print(ask_resp)
-            else:
-                self._orderids.add(ask_resp.order_id)
-            '''
+        # print(self.hist_mid_price)
+
+        # train algorithm
+        if self.counter >= 15:
+            ready_weights = self.rebalance_pairs(spread)
+
+        self.counter += 1
+        competitor_metadata = exchange_update_response.competitor_metadata
+        print(competitor_metadata)
+        fills = exchange_update_response.fills
+        # print(fills)
+
+
+    def rebalance_pairs(self, spread):
+        # Loop through every pair
+        for contract_y, contract_x in self.contract_pairs:
+            Y = np.asarray(self.hist_mid_price[contract_y])
+            X = np.asarray(self.hist_mid_price[contract_x])
+
+            y_log = np.log(Y)
+            x_log = np.log(X)
+
+            pvalue = coint(y_log, x_log)[1]
+
+            if pvalue > 0.05:
+                self.current_weights[contract_y] = 0
+                self.current_weights[contract_x] = 0
+                '''
+                print(
+                    "({} {}) no longer cointegrated, no new positions.".format(
+                        contract_y,
+                        contract_x
+                    )
+                )
+                '''
+                continue
+
+            regression = sp.stats.linregress(x_log[-self.long_ma:], y_log[-self.long_ma:])
+
+            spreads = Y - (regression.slope * X)
+
+            zscore = (
+                np.mean(spreads[-self.short_ma:]) - np.mean(spreads)
+            ) / np.std(spreads, ddof=1)
+
+            # print("z-score", zscore)
+
+            hedge_ratio = regression.slope
+            # print("hedge_ratio", hedge_ratio)
+
+            if self.in_Short[(contract_y, contract_x)] and zscore < 0.0:
+                # Do nothing but clean our trade
+                self.current_weights[contract_y] = 0
+                self.current_weights[contract_x] = 0
+
+                self.in_Long[(contract_y, contract_x)] = False
+                self.in_Short[(contract_y, contract_x)] = False
+                continue
+
+            if self.in_Long[(contract_y, contract_x)] and zscore > 0.0:
+                # Do nothing but clean our trade
+                self.current_weights[contract_y] = 0
+                self.current_weights[contract_x] = 0
+
+                self.in_Long[(contract_y, contract_x)] = False
+                self.in_Short[(contract_y, contract_x)] = False
+                continue
+
+            if zscore < -0.3 and (not self.in_Long[(contract_y, contract_x)]): # long y short x
+                # Only trade if NOT already in a trade
+                y_target_contracts = 1
+                x_target_contracts = hedge_ratio
+
+                self.in_Long[(contract_y, contract_x)] = True
+                self.in_Short[(contract_y, contract_x)] = False
+
+                (y_target_pct, x_target_pct) = self.computeHoldingsPct(
+                    y_target_contracts,
+                    x_target_contracts,
+                    Y[-1],
+                    X[-1]
+                )
+
+                y_quantity = int(25*math.ceil(y_target_pct))
+                x_quantity = int(25*math.ceil(x_target_pct))
+
+                y_price = round(Y[-1], 2)
+                x_price = round(X[-1], 2)
+                spread = round(spread, 2)
+
+                #asset_code, quantity, base_price, spread, bid=True):
+                bid_resp = self.place_order(self._make_order(contract_y, y_quantity, y_price, spread, True))
+                ask_resp = self.place_order(self._make_order(contract_x, x_quantity, x_price, spread, False))
+
+                self.current_weights[contract_y] = self.current_weights[contract_y]+ y_target_pct
+                self.current_weights[contract_x] = self.current_weights[contract_x] - x_target_pct
+
+                if type(bid_resp) != PlaceOrderResponse:
+                    print("BID FOR ", contract_y, " FAILED: ", bid_resp)
+                else:
+                    self._orderids.add(bid_resp.order_id)
+                if type(ask_resp) != PlaceOrderResponse:
+                    print("ASK FOR ", contract_x, " FAILED: ", ask_resp)
+                else:
+                    self._orderids.add(ask_resp.order_id)
+                continue
+
+            if zscore > 0.3 and (not self.in_Short[(contract_y, contract_x)]):
+                # Only trade if NOT already in a trade
+                y_target_contracts = 1
+                x_target_contracts = hedge_ratio
+
+                self.in_Long[(contract_y, contract_x)] = False
+                self.in_Short[(contract_y, contract_x)] = True
+
+                (y_target_pct, x_target_pct) = self.computeHoldingsPct(
+                    y_target_contracts,
+                    x_target_contracts,
+                    Y[-1],
+                    X[-1]
+                )
+
+                y_quantity = int(25*math.ceil(y_target_pct))
+                x_quantity = int(25*math.ceil(x_target_pct))
+                y_price = round(Y[-1], 2)
+                x_price = round(X[-1], 2)
+                spread = round(spread, 2)
+
+                ask_resp = self.place_order(self._make_order(contract_y, y_quantity, y_price, spread, False))
+                bid_resp = self.place_order(self._make_order(contract_x, x_quantity, x_price, spread, True))
+                '''
+                self.current_weights[contract_y] = self.current_weights[contract_y] - y_target_pct
+                self.current_weights[contract_x] = self.current_weights[contract_x] + x_target_pct
+                '''
+                if type(bid_resp) != PlaceOrderResponse:
+                    print("BID FOR ", contract_x, " FAILED: ", bid_resp)
+                else:
+                    self._orderids.add(bid_resp.order_id)
+                if type(ask_resp) != PlaceOrderResponse:
+                    print("ASK FOR ", contract_y, " FAILED: ", ask_resp)
+                else:
+                    self._orderids.add(ask_resp.order_id)
+                continue
+
+
+
+        weights = self.current_weights
+        return weights
+
+    def computeHoldingsPct(self, yShares, xShares, yPrice, xPrice):
+        yDol = yShares * yPrice
+        xDol = xShares * xPrice
+        notionalDol =  abs(yDol) + abs(xDol)
+        y_target_pct = yDol / notionalDol
+        x_target_pct = xDol / notionalDol
+        return (y_target_pct, x_target_pct)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the exchange client')
-    parser.add_argument("--server_host", type=str, default="localhost")
+    parser.add_argument("--server_host", type=str, default="ec2-52-15-48-176.us-east-2.compute.amazonaws.com") # ec2-13-59-156-215.us-east-2.compute.amazonaws.com
     parser.add_argument("--server_port", type=str, default="50052")
     parser.add_argument("--client_id", type=str)
     parser.add_argument("--client_private_key", type=str)
@@ -133,8 +266,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     host, port, client_id, client_pk, websocket_port = (args.server_host, args.server_port,
-                                        args.client_id, args.client_private_key,
+                                        "SmithAmh", args.client_private_key,
                                         args.websocket_port)
 
-    client = ExampleMarketMaker(host, port, client_id, client_pk, websocket_port)
+    client = Case1PairTrade(host, port, client_id, client_pk, websocket_port)
     client.start_updates()
