@@ -38,7 +38,6 @@ def rel_tech_org():
 def rel_tech_key(item):
     key=str(item["search_keyword"])
     print(key)
-    title = item["title"]
     url = item["url"]
     sql = 'SET sql_safe_updates = 0; '\
     'SET @key_id1=(select id from technique_words WHERE keyword = "%s"); '\
@@ -128,10 +127,8 @@ class SaveToMySQL(object):
                 sql = insert_json_into_sql(line_new, self.cur_time, self.cur_time, self.cur_time)
                 self.cursor.execute(sql)
                 self.connect.commit()
-#                identity = do.getId()
-#                
-#                print("identity" , identity)
-                sql2 = rel_tech_key(line_new)
+
+#                sql2 = rel_tech_key(line_new)
                 key=str(line_new["search_keyword"])
                 tech_id= 'select id from technique_words WHERE keyword = "%s"; ' % (key)
                 print("This is what sql will take in : "+ "\n" + tech_id)
@@ -145,7 +142,7 @@ class SaveToMySQL(object):
 #                self.connect.commit()
 #
 #                identity = self.cursor.execute(sql[1])
-#                self.connect.commit()
+#                self.connect.commit() 
 #                print("sql: ", sent)
 #                print ("tech_id : ", identity)
 #                return 
