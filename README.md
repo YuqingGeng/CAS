@@ -1,1 +1,3 @@
-# Team AmhSmith Code Submission for MWTC19
+CAS summer internship (2019): 
+* MIT crawler
+* Southampton University Crawler 
